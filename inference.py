@@ -28,7 +28,7 @@ def main():
         model = create_model(model_config, rngs=nnx.Rngs(0), tokenizer=tokenizer)
         restore_nnx_module(model, restored_checkpoint["model_state"])
 
-    start_prompt = "He is so mascular, handsome. He took out his dick and stared at me greedily"
+    start_prompt = "Donald Trump is a "
     if len(sys.argv) > 1:
         start_prompt = " ".join(sys.argv[1:])
 

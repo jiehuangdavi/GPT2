@@ -32,11 +32,12 @@ def get_gpt2_config(variant="GPT2"):
         seqlen = 512
         embed_dim = 768
         num_heads = 12
-        # 72 OOMs on ~16GB HBM (e.g. TPU v5e). Override with BATCH_SIZE if needed.
+        # 48+ often OOMs on ~16GB HBM (e.g. TPU v5e). Override with BATCH_SIZE if needed.
         batch_size = int(os.environ.get("BATCH_SIZE", "32"))
 
     feed_forward_dim = 4 * embed_dim
-    max_steps = 500000 * 12 // batch_size
+    # total tokens/ (batch_size * seqlen)
+    max_steps = 550000
 
     config = GPT2Config(
         seqlen=seqlen,
@@ -46,7 +47,10 @@ def get_gpt2_config(variant="GPT2"):
         feed_forward_dim=feed_forward_dim,
         num_transformer_blocks=num_transformer_blocks,
         dropout_rate=0.1,
-        top_k=10,
+        top_k=50,
+        top_p=0.9,
+        temperature=0.9,
+        repetition_penalty=1.2,
         dtype=jnp.bfloat16,
         param_dtype=jnp.float32,
     )
@@ -56,5 +60,6 @@ def get_gpt2_config(variant="GPT2"):
         "max_steps": max_steps,
         "init_learning_rate": 5e-4,
         "weight_decay": 1e-1,
+        "checkpoint_every": int(os.environ.get("CHECKPOINT_EVERY", "10000")),
     }
     return tokenizer, config, training

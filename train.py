@@ -14,7 +14,7 @@ from jax.experimental import mesh_utils
 from jax.sharding import Mesh, NamedSharding, PartitionSpec as P
 
 from config import get_gpt2_config, get_paths
-from GPT2_model import create_model, loss_fn, restore_nnx_module, train_step
+from GPT2_model import create_model, eval_loss_fn, restore_nnx_module, train_step
 
 
 def main():
@@ -26,6 +26,7 @@ def main():
     max_steps = training_config["max_steps"]
     init_learning_rate = training_config["init_learning_rate"]
     weight_decay = training_config["weight_decay"]
+    checkpoint_every = training_config["checkpoint_every"]
 
     seqlen = model_config.seqlen
     dtype = model_config.dtype
@@ -74,6 +75,17 @@ def main():
         return x, y
 
     print(f"Checkpoint path set to: {checkpoint_path}")
+    print(f"Periodic checkpoint every {checkpoint_every} steps")
+
+    def save_checkpoint(step_value):
+        items_to_save = {
+            "model_state": nnx.state(model),
+            "optimizer_state": nnx.state(optimizer),
+            "step": step_value,
+        }
+        print(f"Saving checkpoint to {checkpoint_path} at step {step_value}...")
+        checkpointer.save(checkpoint_path, items_to_save, force=True)
+        print(f"Checkpoint saved at step {step_value}")
 
     schedule = optax.cosine_decay_schedule(
         init_value=init_learning_rate,
@@ -112,8 +124,6 @@ def main():
             restore_nnx_module(model, latest_checkpoint["model_state"])
             optimizer = nnx.Optimizer(model, optax_chain, wrt=nnx.Param)
             restore_nnx_module(optimizer, latest_checkpoint["optimizer_state"])
-        step = int(latest_checkpoint["step"])
-        print(f"Resumed from step {step}")
     else:
         print("Starting new training session.")
         with mesh:
@@ -157,14 +167,15 @@ def main():
 
             input_val_batch, target_val_batch = get_batch("val")
             with mesh:
-                loss, logits = loss_fn(
+                loss = eval_loss_fn(
                     model,
                     jax.device_put(
                         (input_val_batch, target_val_batch),
                         NamedSharding(mesh, P("batch", None)),
                     ),
                 )
-            val_metrics.update(val_loss=loss, logits=logits)
+                loss.block_until_ready()
+            val_metrics.update(val_loss=loss)
             val_loss = float(val_metrics.compute())
             metrics_history["val_loss"].append(val_loss)
             if use_wandb:
@@ -172,7 +183,13 @@ def main():
             print(f"                                   Validation loss: {val_loss:.4f}")
             train_metrics.reset()
             val_metrics.reset()
+            del loss, input_val_batch, target_val_batch
             start_time = time.time()
+
+        # Skip step 0 so a fresh run does not overwrite a prior checkpoint
+        # with an untrained model before any real progress.
+        if step > 0 and step % checkpoint_every == 0:
+            save_checkpoint(step)
 
         step += 1
         if step > max_steps:
@@ -189,15 +206,7 @@ def main():
     plt.savefig(os.path.join(checkpoint_path, "training_loss.png"))
     print(f"Saved training loss plot to {os.path.join(checkpoint_path, 'training_loss.png')}")
 
-    items_to_save = {
-        "model_state": nnx.state(model),
-        "optimizer_state": nnx.state(optimizer),
-        "step": step,
-    }
-
-    print(f"Attempting to save checkpoint to: {checkpoint_path}")
-    checkpointer.save(checkpoint_path, items_to_save, force=True)
-    print(f"Checkpoint saved to {checkpoint_path} at step {step}")
+    save_checkpoint(step)
 
     if use_wandb:
         wandb.finish()
